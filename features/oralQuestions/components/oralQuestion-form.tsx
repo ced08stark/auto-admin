@@ -8,20 +8,133 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 import { useFieldArray, useForm } from "react-hook-form";
-import { useState, useEffect } from "react";
+import { useEffect, useState, useMemo } from "react";
 import * as z from "zod";
-import { Trash2, Upload, Play, Pause, Volume2 } from "lucide-react";
+import { Trash2, Upload, Play, Pause, Volume2, Loader2, CheckCircle, AlertCircle, X } from "lucide-react";
 import { useWatch, useController } from "react-hook-form";
 import { useSerie } from "@/contexts/SerieContext";
 import { useOralQuestion } from "@/contexts/OralQuestionContext";
+import axios, { AxiosProgressEvent, CancelToken } from "axios";
+import { MediaPreview } from "@/components/MediaPreview";
+import { toast } from "sonner";
+import { useAxios } from "@/lib/api";
+import { useAuthHeaders } from "@/hooks/useAuthHeader";
 
-// ✅ Validation Zod basée sur ton schema Mongoose
+
+// Service d'upload avec Axios
+class FileUploadService {
+  private static readonly BACKEND_URL = "http://localhost:5000";
+  private static readonly MAX_RETRIES = 3;
+
+  static async uploadFile(
+    file: File,
+    type: 'image' | 'audio' | 'video',
+    onProgress?: (progress: number) => void,
+    cancelToken?: CancelToken
+  ): Promise<{ url: string; filename: string }> {
+    this.validateFile(file, type);
+
+    const formData = new FormData();
+    formData.append('files', file);
+    formData.append('type', type);
+    
+    let attempt = 0;
+    while (attempt < this.MAX_RETRIES) {
+      try {
+        const response = await axios.post(
+          `${this.BACKEND_URL}/api/v1/files/upload`,
+          formData,
+          {
+            timeout: 5 * 60 * 1000, // 5 minutes
+            cancelToken,
+            headers: {
+              'Content-Type': 'multipart/form-data',
+            },
+            onUploadProgress: (progressEvent: AxiosProgressEvent) => {
+              if (progressEvent.total && onProgress) {
+                const progress = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+                onProgress(progress);
+              }
+            },
+          }
+        );
+
+        console.log("Upload response:", response.data);
+
+        if (!response.data.file.filename) {
+          throw new Error('URL manquante dans la réponse du serveur');
+        }
+
+        return {
+          url: `${this.BACKEND_URL}/api/v1/files/${response?.data?.file.filename}`,
+          filename: response?.data?.file.filename,
+        };
+
+      } catch (error: any) {
+        attempt++;
+
+        if (axios.isCancel(error)) {
+          throw new Error('Upload annulé');
+        }
+
+        if (attempt >= this.MAX_RETRIES) {
+          if (error.response) {
+            const message = error.response.data?.message || `Erreur HTTP ${error.response.status}`;
+            throw new Error(message);
+          } else if (error.request) {
+            throw new Error('Aucune réponse du serveur');
+          } else {
+            throw new Error(error.message || 'Erreur inconnue');
+          }
+        }
+
+        // Attendre avant retry
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+      }
+    }
+
+    throw new Error('Upload échoué après plusieurs tentatives');
+  }
+
+  private static validateFile(file: File, expectedType: string): void {
+    const maxSizes = {
+      image: 10 * 1024 * 1024,  // 10MB
+      audio: 50 * 1024 * 1024,  // 50MB
+      video: 100 * 1024 * 1024, // 100MB
+    };
+
+    const maxSize = maxSizes[expectedType as keyof typeof maxSizes] || 10 * 1024 * 1024;
+
+    if (file.size > maxSize) {
+      throw new Error(`Le fichier ne peut pas dépasser ${Math.round(maxSize / (1024 * 1024))}MB`);
+    }
+
+    if (!file.type.startsWith(expectedType)) {
+      throw new Error(`Le fichier doit être de type ${expectedType}`);
+    }
+  }
+}
+
+// Interface pour les fichiers uploadés
+interface UploadedFile {
+  file: File;
+  url?: string;
+  uploadProgress: number;
+  isUploading: boolean;
+  uploadError?: string;
+  uploadSuccess: boolean;
+  cancelToken?: CancelToken;
+}
+
+// Validation Zod mise à jour
 const suggestionSchema = z.object({
   text: z.string().min(1, "Suggestion requise"),
-  isCorrect: z.boolean(),
+  isCorrect: z.string(),
 });
 
 const consigneSchema = z.object({
@@ -38,118 +151,218 @@ const consigneSchema = z.object({
 const libelleSchema = z.object({
   libelle: z.string().optional(),
   typeLibelle: z.enum(["texte", "image", "audio", "video"]),
-  fichier: z.any().optional(), // Pour les fichiers uploadés
-  urlFichier: z.string().optional(), // URL du fichier stocké
+  fichier: z.any().optional(),
+  urlFichier: z.string().optional(),
 });
 
-const formSchema = z.object({
-  numero: z.number(),
-  libelles: z.array(libelleSchema).min(1, "Au moins un libellé"),
-  consignes: z.array(consigneSchema).min(1, "Au moins une consigne"),
-  serieId: z.string().min(1, "Série requise"),
-  duree: z.number().optional(),
+export const formSchema = z.object({
+  numero: z.number().min(1, "Le numéro est obligatoire"),
+  duree: z.number().min(0, "Durée invalide"),
+  serieId: z.string().min(1, "La série est obligatoire"),
+  libelles: z.array(
+    z.object({
+      libelle: z.string().min(1, "Le libellé est requis"),
+      typeLibelle: z.enum(["texte", "image", "video"]),
+    })
+  ),
+  consignes: z.array(
+    z
+      .object({
+        numero: z.number(),
+        consigne: z.string().min(1, "La consigne est requise"),
+        suggestions: z
+          .array(
+            z.object({
+              text: z.string().min(1, "La suggestion est requise"),
+              isCorrect: z.union([z.string(), z.boolean()]), // "true"/"false" ou bool
+            })
+          )
+          .min(2, "Minimum 2 suggestions"),
+      })
+      .refine(
+        (consigne) =>
+          consigne.suggestions.filter((s) => String(s.isCorrect) === "true").length === 1,
+        {
+          message: "Chaque consigne doit avoir exactement une réponse correcte",
+          path: ["suggestions"],
+        }
+      )
+  ),
 });
 
-// Types MIME acceptés par type de libellé
+// Types MIME acceptés
 const ACCEPTED_FILE_TYPES = {
   image: ["image/jpeg", "image/png", "image/gif", "image/webp"],
-  audio: ["audio/mp3", "audio/wav", "audio/ogg", "audio/m4a"],
-  video: ["video/mp4", "video/webm", "video/ogg", "video/avi"],
+  audio: ["audio/mp3", "audio/wav", "audio/ogg", "audio/m4a", "audio/mpeg"],
+  video: ["video/mp4", "video/webm", "video/ogg", "video/avi", "video/mov"],
 };
 
-interface MediaPreviewProps {
-  type: string;
-  file: File | null;
-  url?: string;
-  onRemove: () => void;
-}
+// Composant de prévisualisation média amélioré
+// function MediaPreview({
+//   type,
+//   uploadedFile,
+//   onRemove,
+//   onRetry
+// }: {
+//   type: string;
+//   uploadedFile: UploadedFile;
+//   onRemove: () => void;
+//   onRetry?: () => void;
+// }) {
+//   const [isPlaying, setIsPlaying] = useState(false);
+//   const mediaUrl = uploadedFile.url || URL.createObjectURL(uploadedFile.file);
 
-function MediaPreview({ type, file, url, onRemove }: MediaPreviewProps) {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const mediaUrl = file ? URL.createObjectURL(file) : url;
+//   const formatFileSize = (bytes: number) => {
+//     const mb = bytes / (1024 * 1024);
+//     return mb.toFixed(1) + ' MB';
+//   };
 
-  if (!mediaUrl) return null;
+//   const togglePlay = (element: HTMLAudioElement | HTMLVideoElement) => {
+//     if (isPlaying) {
+//       element.pause();
+//     } else {
+//       element.play();
+//     }
+//     setIsPlaying(!isPlaying);
+//   };
 
-  const togglePlay = (audioElement: HTMLAudioElement | HTMLVideoElement) => {
-    if (isPlaying) {
-      audioElement.pause();
-    } else {
-      audioElement.play();
-    }
-    setIsPlaying(!isPlaying);
-  };
+//   return (
+//     <div className="relative border rounded-lg p-3 bg-gray-50 space-y-3">
+//       {/* Header avec statut */}
+//       <div className="flex items-center justify-between">
+//         <div className="flex items-center gap-2">
+//           <div className="flex flex-col">
+//             <span className="text-sm font-medium truncate">
+//               {uploadedFile.file.name}
+//             </span>
+//             <div className="flex gap-2 text-xs text-gray-600">
+//               <span>{formatFileSize(uploadedFile.file.size)}</span>
+//               <Badge variant="outline" className="text-xs">
+//                 {type}
+//               </Badge>
 
-  return (
-    <div className="relative border rounded p-2 bg-gray-50">
-      <Button
-        type="button"
-        variant="destructive"
-        size="sm"
-        className="absolute top-1 right-1 z-10"
-        onClick={onRemove}
-      >
-        <Trash2 className="h-4 w-4" />
-      </Button>
+//               {/* Status badges */}
+//               {uploadedFile.isUploading && (
+//                 <Badge variant="secondary" className="text-xs">
+//                   Upload...
+//                 </Badge>
+//               )}
+//               {uploadedFile.uploadSuccess && (
+//                 <Badge variant="default" className="text-xs bg-green-500">
+//                   <CheckCircle className="h-3 w-3 mr-1" />
+//                   Uploadé
+//                 </Badge>
+//               )}
+//               {uploadedFile.uploadError && (
+//                 <Badge variant="destructive" className="text-xs">
+//                   <AlertCircle className="h-3 w-3 mr-1" />
+//                   Erreur
+//                 </Badge>
+//               )}
+//             </div>
+//           </div>
+//         </div>
 
-      {type === "image" && (
-        <img
-          src={mediaUrl}
-          alt="Prévisualisation"
-          className="max-w-full h-32 object-cover rounded"
-        />
-      )}
+//         <div className="flex items-center gap-2">
+//           {uploadedFile.isUploading ? (
+//             <div className="flex items-center gap-2">
+//               <Loader2 className="h-4 w-4 animate-spin" />
+//               <span className="text-sm">{uploadedFile.uploadProgress}%</span>
+//             </div>
+//           ) : uploadedFile.uploadError && onRetry ? (
+//             <Button variant="outline" size="sm" onClick={onRetry}>
+//               Réessayer
+//             </Button>
+//           ) : null}
 
-      {type === "audio" && (
-        <div className="flex items-center gap-2 p-2">
-          <Volume2 className="h-5 w-5" />
-          <span className="text-sm">{file?.name || "Audio"}</span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              const audio = document.getElementById(`audio-${mediaUrl}`) as HTMLAudioElement;
-              if (audio) togglePlay(audio);
-            }}
-          >
-            {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-          </Button>
-          <audio
-            id={`audio-${mediaUrl}`}
-            src={mediaUrl}
-            onEnded={() => setIsPlaying(false)}
-            className="hidden"
-          />
-        </div>
-      )}
+//           <Button variant="destructive" size="sm" onClick={onRemove}>
+//             <X className="h-4 w-4" />
+//           </Button>
+//         </div>
+//       </div>
 
-      {type === "video" && (
-        <div className="space-y-2">
-          <video
-            src={mediaUrl}
-            controls
-            className="max-w-full h-32 rounded"
-            preload="metadata"
-          />
-          <p className="text-xs text-gray-600">{file?.name || "Vidéo"}</p>
-        </div>
-      )}
-    </div>
-  );
-}
+//       {/* Barre de progression */}
+//       {uploadedFile.isUploading && (
+//         <div className="w-full bg-gray-200 rounded-full h-2">
+//           <div
+//             className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+//             style={{ width: `${uploadedFile.uploadProgress}%` }}
+//           />
+//         </div>
+//       )}
 
-interface LibelleFieldProps {
+//       {/* Message d'erreur */}
+//       {uploadedFile.uploadError && (
+//         <Alert variant="destructive">
+//           <AlertCircle className="h-4 w-4" />
+//           <AlertDescription className="text-sm">
+//             {uploadedFile.uploadError}
+//           </AlertDescription>
+//         </Alert>
+//       )}
+
+//       {/* Prévisualisation du contenu */}
+//       {!uploadedFile.uploadError && (
+//         <>
+//           {type === "image" && (
+//             <img
+//               src={mediaUrl}
+//               alt="Prévisualisation"
+//               className="max-w-full h-32 object-cover rounded"
+//             />
+//           )}
+
+//           {type === "audio" && (
+//             <div className="flex items-center gap-2 p-2 bg-white rounded">
+//               <Volume2 className="h-5 w-5" />
+//               <Button
+//                 type="button"
+//                 variant="outline"
+//                 size="sm"
+//                 onClick={() => {
+//                   const audio = document.getElementById(`audio-${uploadedFile.file.name}`) as HTMLAudioElement;
+//                   if (audio) togglePlay(audio);
+//                 }}
+//               >
+//                 {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+//               </Button>
+//               <audio
+//                 id={`audio-${uploadedFile.file.name}`}
+//                 src={mediaUrl}
+//                 onEnded={() => setIsPlaying(false)}
+//                 className="hidden"
+//               />
+//             </div>
+//           )}
+
+//           {type === "video" && (
+//             <video
+//               src={mediaUrl}
+//               controls
+//               className="max-w-full h-32 rounded"
+//               preload="metadata"
+//             />
+//           )}
+//         </>
+//       )}
+//     </div>
+//   );
+// }
+
+// Composant LibelleField amélioré avec upload
+function LibelleField({
+  index,
+  control,
+  onRemove,
+  canRemove
+}: {
   index: number;
   control: any;
   onRemove: () => void;
   canRemove: boolean;
-}
+}) {
+  const [uploadedFile, setUploadedFile] = useState<UploadedFile | null>(null);
 
-
-function LibelleField({ index, control, onRemove, canRemove }: LibelleFieldProps) {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-
-  // 🔎 Observer le type choisi pour ce libellé
   const typeLibelle = useWatch({
     control,
     name: `libelles.${index}.typeLibelle`,
@@ -160,18 +373,98 @@ function LibelleField({ index, control, onRemove, canRemove }: LibelleFieldProps
     name: `libelles.${index}.libelle`,
   });
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      setSelectedFile(file);
-      // Ici, vous pourriez uploader vers votre backend et stocker l'URL
-      libelleField.onChange(""); // reset du champ texte car on est sur fichier
+  const { field: urlFichierField } = useController({
+    control,
+    name: `libelles.${index}.libelle`,
+  });
+
+  // Réinitialiser le fichier quand le type change
+  useEffect(() => {
+    if (typeLibelle === 'texte') {
+      setUploadedFile(null);
+      urlFichierField.onChange('');
+    }
+  }, [typeLibelle]);
+
+  const uploadFile = async (file: File) => {
+    if (!typeLibelle || typeLibelle === 'texte') return;
+
+    const cancelTokenSource = axios.CancelToken.source();
+
+    const newUploadedFile: UploadedFile = {
+      file,
+      uploadProgress: 0,
+      isUploading: true,
+      uploadSuccess: false,
+      cancelToken: cancelTokenSource.token,
+    };
+
+    setUploadedFile(newUploadedFile);
+
+    try {
+      const result = await FileUploadService.uploadFile(
+        file,
+        typeLibelle as 'image' | 'audio' | 'video',
+        (progress) => {
+          setUploadedFile(prev => prev ? { ...prev, uploadProgress: progress } : null);
+        },
+        cancelTokenSource.token
+      );
+
+      setUploadedFile(prev => prev ? {
+        ...prev,
+        url: result.url,
+        key: result.filename,
+        isUploading: false,
+        uploadSuccess: true,
+        uploadError: undefined,
+      } : null);
+
+      // Mettre à jour le champ du formulaire
+      urlFichierField.onChange(result.filename);
+      toast.success(`${file.name} uploadé avec succès`);
+
+    } catch (error: any) {
+      if (error.message !== 'Upload annulé') {
+        setUploadedFile(prev => prev ? {
+          ...prev,
+          isUploading: false,
+          uploadError: error.message || 'Erreur inconnue',
+          uploadProgress: 0,
+        } : null);
+        toast.error(`Erreur upload: ${error.message}`);
+      }
     }
   };
 
-  const getAcceptedTypes = (type: string) => {
-    return ACCEPTED_FILE_TYPES[type as keyof typeof ACCEPTED_FILE_TYPES]?.join(",") || "";
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      libelleField.onChange(""); // reset texte
+      uploadFile(file);
+    }
   };
+
+  const handleRetryUpload = () => {
+    if (uploadedFile?.file) {
+      uploadFile(uploadedFile.file);
+    }
+  };
+
+  const handleRemoveFile = () => {
+    if (uploadedFile?.cancelToken) {
+      // Annuler l'upload si en cours
+      const source = axios.CancelToken.source();
+      source.cancel('Upload annulé par l\'utilisateur');
+    }
+    setUploadedFile(null);
+    urlFichierField.onChange('');
+  };
+
+  const getAcceptedTypes = (type: string) =>
+    ACCEPTED_FILE_TYPES[type as keyof typeof ACCEPTED_FILE_TYPES]?.join(",") || "";
+
+  const canSubmit = !uploadedFile?.isUploading && !uploadedFile?.uploadError;
 
   return (
     <div className="border rounded p-4 space-y-4">
@@ -184,7 +477,6 @@ function LibelleField({ index, control, onRemove, canRemove }: LibelleFieldProps
         )}
       </div>
 
-      {/* Sélecteur du type */}
       <FormSelect
         control={control}
         name={`libelles.${index}.typeLibelle`}
@@ -198,7 +490,6 @@ function LibelleField({ index, control, onRemove, canRemove }: LibelleFieldProps
         required
       />
 
-      {/* Affichage dynamique selon le type */}
       {typeLibelle === "texte" && (
         <FormTextarea
           control={control}
@@ -209,43 +500,64 @@ function LibelleField({ index, control, onRemove, canRemove }: LibelleFieldProps
       )}
 
       {typeLibelle && typeLibelle !== "texte" && (
-        <div className="space-y-2">
-          <Label htmlFor={`file-${index}`}>
-            Fichier {typeLibelle} <span className="text-red-500">*</span>
-          </Label>
-          <div className="flex items-center gap-2">
-            <Input
-              id={`file-${index}`}
-              type="file"
-              accept={getAcceptedTypes(typeLibelle)}
-              onChange={handleFileChange}
-              className="flex-1"
-            />
-            <Upload className="h-5 w-5 text-gray-400" />
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor={`file-${index}`}>
+              Fichier {typeLibelle} <span className="text-red-500">*</span>
+            </Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id={`file-${index}`}
+                type="file"
+                accept={getAcceptedTypes(typeLibelle)}
+                onChange={handleFileChange}
+                className="flex-1"
+                disabled={uploadedFile?.isUploading}
+              />
+              <Upload className="h-5 w-5 text-gray-400" />
+            </div>
+
+            {/* Informations sur les limites de fichier */}
+            <p className="text-xs text-gray-500">
+              Max: {typeLibelle === 'image' ? '10MB' : typeLibelle === 'audio' ? '50MB' : '100MB'} •
+              Formats: {ACCEPTED_FILE_TYPES[typeLibelle as keyof typeof ACCEPTED_FILE_TYPES]?.map(t => t.split('/')[1]).join(', ')}
+            </p>
           </div>
 
-          {selectedFile && (
+          {uploadedFile && (
             <MediaPreview
+              action={true}
               type={typeLibelle}
-              file={selectedFile}
-              onRemove={() => setSelectedFile(null)}
+              uploadedFile={uploadedFile}
+              onRemove={handleRemoveFile}
+              onRetry={uploadedFile.uploadError ? handleRetryUpload : undefined}
             />
           )}
 
-          {/* Description associée */}
           <FormInput
             control={control}
             name={`libelles.${index}.libelle`}
             label="Description (optionnelle)"
-            placeholder={`Description du ${typeLibelle}...`}
           />
+
+          {/* Alerte si upload en cours ou erreur */}
+          {!canSubmit && (
+            <Alert variant={uploadedFile?.uploadError ? "destructive" : "default"}>
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                {uploadedFile?.isUploading && "Upload en cours... Veuillez patienter."}
+                {uploadedFile?.uploadError && "Erreur d'upload. Réessayez ou supprimez le fichier."}
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-export default function WrittenQuestionForm({
+// Composant principal
+export default function OralQuestionForm({
   initialData,
   pageTitle,
 }: {
@@ -254,69 +566,184 @@ export default function WrittenQuestionForm({
 }) {
   const router = useRouter();
   const { series } = useSerie();
-  console.log("Available series:", series);
-  const { createOralQuestion } = useOralQuestion();
+  const { createOralQuestion, editOralQuestion } = useOralQuestion();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+
+  // ✨ 2. Pré-formater les données initiales pour le formulaire
+  const formattedDefaultValues = useMemo(() => {
+    // Si on est en mode création, on utilise les valeurs par défaut
+    if (!initialData) {
+      return {
+        numero: 1,
+        serieId: "",
+        duree: 0,
+        libelles: [{ libelle: "", typeLibelle: "texte" }],
+        consignes: [
+          {
+            numero: 1,
+            consigne: "",
+            suggestions: [
+              { text: "", isCorrect: "false" }, // Mettre "false" par défaut
+              { text: "", isCorrect: "false" },
+              { text: "", isCorrect: "false" },
+              { text: "", isCorrect: "false" },
+            ],
+          },
+        ],
+      };
+    }
+
+    // Si on est en mode modification, on transforme initialData
+    return {
+      ...initialData,
+      // On extrait l'ID de l'objet serieId
+      serieId: initialData.serieId?._id || "",
+      consignes: initialData.consignes.map((consigne: any) => ({
+        ...consigne,
+        suggestions: consigne.suggestions.map((suggestion: any) => ({
+          ...suggestion,
+          // On convertit le booléen isCorrect en chaîne de caractères
+          isCorrect: String(suggestion.isCorrect),
+        })),
+      })),
+    };
+  }, [initialData]);
+
 
 
   const form: any = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
-    defaultValues: initialData || {
-      numero: 1,
-      duree: undefined,
-      libelles: [{ libelle: "", typeLibelle: "texte" }],
-      consignes: [
-        {
-          numero: 1,
-          consigne: "",
-          suggestions: [
-            { text: "", isCorrect: false },
-            { text: "", isCorrect: false },
-            { text: "", isCorrect: false },
-            { text: "", isCorrect: false },
-          ],
-        },
-      ],
-    },
+    // ✨ 3. Utiliser les valeurs pré-formatées
+    defaultValues: formattedDefaultValues,
   });
 
-  const { fields: libellesFields, append: appendLibelle, remove: removeLibelle } = useFieldArray({
-    control: form.control,
-    name: "libelles",
-  });
 
-  const { fields: consignesFields, append: appendConsigne, remove: removeConsigne } = useFieldArray({
-    control: form.control,
-    name: "consignes",
-  });
+  const axiosInstance = useAxios();
+  const { getHeaders } = useAuthHeaders();
 
-async function onSubmit(values: z.infer<typeof formSchema>) {
-    console.log("✅ Form submitted", values);
-    // Ici vous devriez gérer l'upload des fichiers avant de sauvegarder
 
-    const result = await createOralQuestion(values);
-    if (result?.success) {
-      router.push("/dashboard/oral-questions");
+  const { fields: libellesFields, append: appendLibelle, remove: removeLibelle } =
+    useFieldArray({ control: form.control, name: "libelles" });
+
+  const { fields: consignesFields, append: appendConsigne, remove: removeConsigne } =
+    useFieldArray({ control: form.control, name: "consignes" });
+
+  // ===== VALIDATION 1 : numéro unique dans la série =====
+  useEffect(() => {
+    const numero = form.watch("numero");
+    const serieId = form.watch("serieId");
+    if (!numero || !serieId) return;
+
+    const checkNumero = async () => {
+      try {
+        const { headers } = await getHeaders();
+        const { data } = await axiosInstance.get(
+          `/api/v1/question/oral-questions/check-unique`,
+          { params: { numero, serieId, excludeId: initialData?._id } }
+        );
+        if (!data.unique) {
+          form.setError("numero", {
+            type: "manual",
+            message: "Ce numéro existe déjà dans cette série.",
+          });
+          toast.error("Ce numéro existe déjà dans la série sélectionnée.");
+        } else {
+          form.clearErrors("numero");
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    checkNumero();
+  }, [form.watch("numero"), form.watch("serieId")]);
+
+  // ===== VALIDATION 2 : une seule réponse correcte par consigne =====
+  useEffect(() => {
+    const consignes = form.watch("consignes");
+    consignes?.forEach((consigne: any, idx: number) => {
+      const correctCount = consigne.suggestions.filter(
+        (s: any) => s.isCorrect === "true"
+      ).length;
+      if (correctCount > 1) {
+        form.setError(`consignes.${idx}.suggestions`, {
+          type: "manual",
+          message: "Une seule réponse correcte est autorisée.",
+        });
+        toast.error(`Consigne ${idx + 1} : une seule réponse correcte autorisée.`);
+      } else {
+        form.clearErrors(`consignes.${idx}.suggestions`);
+      }
+    });
+  }, [form.watch("consignes")]);
+
+  // Vérifier si des uploads sont en cours
+  const hasUploadsInProgress = () => {
+    // Cette vérification devrait être améliorée pour vraiment vérifier tous les uploads
+    // Pour l'instant, on assume que si le formulaire est valide, les uploads sont terminés
+    return false;
+  };
+
+  async function onSubmit(values: z.infer<typeof formSchema>) {
+    console.log("Submitting values:", values);
+    if (hasUploadsInProgress()) {
+      toast.error("Des uploads sont en cours. Veuillez patienter.");
+      return;
     }
-    else{
-      alert("created question failure")
+
+    const { data } = await axiosInstance.get(
+      `/api/v1/question/oral-questions/check-unique`, {
+      params: {
+        numero: values.numero,
+        serieId: values.serieId,
+        excludeId: initialData?._id, // utile en mode édition
+      },
+    });
+
+    if (!data.unique) {
+      toast.error(
+        "Ce numéro de question existe déjà dans la série sélectionnée."
+      );
+      setIsSubmitting(false);
+      return; // ⛔ stoppe la soumission
     }
-    // Optionally, handle error feedback here
+
+    if (isSubmitting) return;
+
+    setIsSubmitting(true);
+    try {
+      if (initialData) {
+        const result = await editOralQuestion(initialData._id, values);
+        result?.success
+          ? (toast.success("Question modifiée avec succès!"),
+            router.push("/dashboard/oral-questions"))
+          : toast.error("Erreur lors de la modification");
+      } else {
+        const result = await createOralQuestion(values);
+        result?.success
+          ? (toast.success("Question créée avec succès!"),
+            router.push("/dashboard/oral-questions"))
+          : toast.error("Erreur lors de la création");
+      }
+    } catch (e) {
+      console.error(e);
+      toast.error("Erreur lors de l'enregistrement");
+    } finally {
+      setIsSubmitting(false);
+    }
   }
+
   return (
-    <Card className="mx-auto w-full max-w-4xl">{/*max-w-4xl*/}
+    <Card className="mx-auto w-full max-w-4xl">
       <CardHeader>
         <CardTitle className="text-left text-2xl font-bold">
           {pageTitle}
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <Form
-          form={form}
-          onSubmit={form.handleSubmit(onSubmit)}
-          className="space-y-8"
-        >
+        <Form form={form} onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Numéro de question */}
             <FormInput
               control={form.control}
               name="numero"
@@ -325,7 +752,6 @@ async function onSubmit(values: z.infer<typeof formSchema>) {
               required
             />
 
-            {/* Durée */}
             <FormInput
               control={form.control}
               name="duree"
@@ -334,7 +760,6 @@ async function onSubmit(values: z.infer<typeof formSchema>) {
             />
           </div>
 
-          {/* ⚡ Select Serie */}
           <FormSelect
             control={form.control}
             name="serieId"
@@ -383,6 +808,8 @@ async function onSubmit(values: z.infer<typeof formSchema>) {
                     suggestions: [
                       { text: "", isCorrect: false },
                       { text: "", isCorrect: false },
+                      { text: "", isCorrect: false },
+                      { text: "", isCorrect: false },
                     ],
                   })
                 }
@@ -393,7 +820,7 @@ async function onSubmit(values: z.infer<typeof formSchema>) {
 
             <div className="space-y-6">
               {consignesFields.map((field, index) => (
-                <div key={field.id} className="border rounded-lg p-4 bg-gray-50">
+                <div key={field.id} className="border rounded-lg p-4  dark:bg-gray-900">
                   <div className="flex items-center justify-between mb-4">
                     <h4 className="font-medium">Consigne {index + 1}</h4>
                     {consignesFields.length > 1 && (
@@ -408,15 +835,6 @@ async function onSubmit(values: z.infer<typeof formSchema>) {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                    <FormInput
-                      control={form.control}
-                      name={`consignes.${index}.numero`}
-                      label="Numéro consigne"
-                      type="number"
-                    />
-                  </div>
-
                   <FormTextarea
                     control={form.control}
                     name={`consignes.${index}.consigne`}
@@ -425,35 +843,26 @@ async function onSubmit(values: z.infer<typeof formSchema>) {
                     className="mb-4"
                   />
 
-                  {/* Suggestions */}
-                  <div>
-                    <h5 className="font-medium mb-2">Suggestions de réponse</h5>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {form.watch(`consignes.${index}.suggestions`)?.map(
-                        (_s: any, sIndex: number) => (
-                          <div
-                            key={sIndex}
-                            className="border rounded p-3 bg-white space-y-2"
-                          >
-                            <FormInput
-                              control={form.control}
-                              name={`consignes.${index}.suggestions.${sIndex}.text`}
-                              label={`Suggestion ${sIndex + 1}`}
-                              required
-                            />
-                            <FormSelect
-                              control={form.control}
-                              name={`consignes.${index}.suggestions.${sIndex}.isCorrect`}
-                              label="Réponse correcte ?"
-                              options={[
-                                { label: "Oui", value: "true" },
-                                { label: "Non", value: "false" },
-                              ]}
-                            />
-                          </div>
-                        )
-                      )}
-                    </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {form.watch(`consignes.${index}.suggestions`)?.map((_s: any, sIndex: number) => (
+                      <div key={sIndex} className="border rounded p-3  dark:bg-gray-900 space-y-2">
+                        <FormInput
+                          control={form.control}
+                          name={`consignes.${index}.suggestions.${sIndex}.text`}
+                          label={`Suggestion ${sIndex + 1}`}
+                          required
+                        />
+                        <FormSelect
+                          control={form.control}
+                          name={`consignes.${index}.suggestions.${sIndex}.isCorrect`}
+                          label="Réponse correcte ?"
+                          options={[
+                            { label: "Oui", value: "true" },
+                            { label: "Non", value: "false" },
+                          ]}
+                        />
+                      </div>
+                    ))}
                   </div>
                 </div>
               ))}
@@ -464,12 +873,23 @@ async function onSubmit(values: z.infer<typeof formSchema>) {
             <Button
               type="button"
               variant="outline"
-              onClick={() => router.push("/dashboard/written-questions")}
+              onClick={() => router.push("/dashboard/oral-questions")}
             >
               Annuler
             </Button>
-            <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
-              Enregistrer la question
+            <Button
+              type="submit"
+              className="bg-blue-600 hover:bg-blue-700"
+              disabled={isSubmitting || hasUploadsInProgress()}
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Enregistrement...
+                </>
+              ) : (
+                "Enregistrer la question"
+              )}
             </Button>
           </div>
         </Form>

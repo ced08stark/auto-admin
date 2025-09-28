@@ -23,7 +23,6 @@ export const WrittenQuestionProvider = ({ children }: { children: React.ReactNod
 
   useEffect(() => {
     loadWrittenQuestions();
-    console.log('test' + writtenQuestions)
   }, []);
 
   const createWrittenQuestion = async (question: WrittenQuestion) => {

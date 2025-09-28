@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { DataTableColumnHeader } from '@/components/ui/table/data-table-column-header';
 import { CellAction } from './cell-actions';
 import { OralQuestion } from '@/types/data-type';
+import { MediaPreview } from '@/components/MediaPreview';
 
 export const columns: ColumnDef<OralQuestion>[] = [
   {
@@ -21,9 +22,24 @@ export const columns: ColumnDef<OralQuestion>[] = [
       return (
         <div className="flex flex-col gap-1">
           {libelles?.map((l, idx) => (
-            <Badge key={idx} variant="outline">
-              {l.libelle} ({l.typeLibelle})
-            </Badge>
+           l?.typeLibelle === 'texte' ? (
+            <div key={idx} className="p-2 border rounded-md">
+              <p className="font-medium">{l.libelle}</p>
+            </div>
+           ) : 
+            <MediaPreview
+              key={idx}
+              type={l.typeLibelle}
+              action={false}
+              uploadedFile={{
+                file: new File([], l.libelle), // Fichier fictif pour l'affichage
+                url: `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/v1/files/${l.libelle}`, // URL de la vidéo ou audio
+                uploadProgress: 100,
+                isUploading: false,
+                uploadSuccess: true
+              }}
+              onRemove={() => {}}
+            />
           ))}
         </div>
       );
@@ -57,14 +73,14 @@ export const columns: ColumnDef<OralQuestion>[] = [
     header: 'Durée (min)',
     cell: ({ row }) => row.getValue('duree') || '—',
   },
-  {
-    id: 'serie', // A unique ID for the column
-    header: 'Serie',
-    // Use an accessor function to safely access the nested property
-    accessorFn: (row : OralQuestion) => row.serieId?.libelle,
-    // The cell can now get the pre-calculated value from the accessorFn
-    cell: (info) => info.getValue() || '—',
-  },
+ {
+     id: 'serie', // A unique ID for the column
+     header: 'Serie',
+     // Use an accessor function to safely access the nested property
+     accessorFn: (row : OralQuestion) => row.serieId?.libelle,
+     // The cell can now get the pre-calculated value from the accessorFn
+     cell: (info) => info.getValue() || '—',
+   },
   {
     accessorKey: 'startedAt',
     header: 'Date de création',

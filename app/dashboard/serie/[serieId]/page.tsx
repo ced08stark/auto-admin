@@ -1,21 +1,55 @@
-import FormCardSkeleton from '@/components/form-card-skeleton';
 import PageContainer from '@/components/layout/page-container';
+import { buttonVariants } from '@/components/ui/button';
+import { Heading } from '@/components/ui/heading';
+import { Separator } from '@/components/ui/separator';
+import { searchParamsCache, serialize } from '@/lib/searchparams';
+import { cn } from '@/lib/utils';
+import { IconPlus } from '@tabler/icons-react';
+import Link from 'next/link';
+import { SearchParams } from 'nuqs/server';
 import { Suspense } from 'react';
-import QuestionViewPage from '@/features/oralQuestions/components/oralQuestion-view-page';
+import { DataTableSkeleton } from '@/components/ui/table/data-table-skeleton';
+import SerieListingViewPage from '@/features/series/components/serie-view-page';
+
+
 
 export const metadata = {
-  title: 'Dashboard : Question View'
+  title: 'Dashboard: Serie Details'
 };
 
-type PageProps = { params: Promise<{ questionId: string }> };
+type PageProps = { params: Promise<{ serieId: string }> };
+
 
 export default async function Page(props: PageProps) {
-  const params = await props.params;
+   const params = await props.params;
+  // Allow nested RSCs to access the search params (in a type-safe way)
+
+  // This key is used for invoke suspense if any of the search params changed (used for filters).
+  // const key = serialize({ ...searchParams });
+
   return (
-    <PageContainer scrollable>
-      <div className='flex-1 space-y-4'>
-        <Suspense fallback={<FormCardSkeleton />}>
-          <QuestionViewPage questionId={params.questionId} />
+    <PageContainer scrollable={false}>
+      <div className='flex flex-1 flex-col space-y-4'>
+        <div className='flex items-start justify-between'>
+          <Heading
+            title='Series'
+            description='Manage serie (Server side table functionalities.)'
+          />
+          {/* <Link
+            href='/dashboard/oral-questions/new'
+            className={cn(buttonVariants(), 'text-xs md:text-sm')}
+          >
+            <IconPlus className='mr-2 h-4 w-4' /> Add New
+          </Link> */}
+        </div>
+        <Separator />
+        <Suspense
+          // key={key}
+          fallback={
+            <DataTableSkeleton columnCount={5} rowCount={8} filterCount={2} />
+          }
+        >
+          <SerieListingViewPage serieId={params.serieId} />
         </Suspense>
       </div>
     </PageContainer>

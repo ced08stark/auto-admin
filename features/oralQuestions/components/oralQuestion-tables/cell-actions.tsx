@@ -12,6 +12,7 @@ import { OralQuestion } from '@/types/data-type';
 import { IconEdit, IconDotsVertical, IconTrash } from '@tabler/icons-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { useOralQuestion } from '@/contexts/OralQuestionContext';
 
 interface CellActionProps {
   data: OralQuestion;
@@ -21,6 +22,20 @@ export const CellAction: React.FC<CellActionProps> = ({ data }) => {
   const [loading] = useState(false);
   const [open, setOpen] = useState(false);
   const router = useRouter();
+   const {  editOralQuestion, removeOralQuestion } = useOralQuestion();
+
+    const handleUpdate = (values: any) => {
+    console.log("Updating permit type:", data._id, values);
+    editOralQuestion(data._id, values);
+    // router.refresh();
+    // 👉 appel API PUT /permit-types/:id
+  };
+
+  const handleDelete = () => {
+    console.log("Deleting permit type:", data._id);
+    removeOralQuestion(data._id);
+    // 👉 appel API DELETE /permit-types/:id
+  };
 
   const onConfirm = async () => {};
 
@@ -47,7 +62,7 @@ export const CellAction: React.FC<CellActionProps> = ({ data }) => {
           >
             <IconEdit className='mr-2 h-4 w-4' /> Update
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setOpen(true)}>
+          <DropdownMenuItem onClick={() => handleDelete()}>
             <IconTrash className='mr-2 h-4 w-4' /> Delete
           </DropdownMenuItem>
         </DropdownMenuContent>

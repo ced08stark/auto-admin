@@ -13,6 +13,7 @@ export const searchParams = {
   category: parseAsString,
   consigne: parseAsString,
   libelle: parseAsString,
+  serieId: parseAsString,
   // advanced filter
   // filters: getFiltersStateParser().withDefault([]),
   // joinOperator: parseAsStringEnum(['and', 'or']).withDefault('and')

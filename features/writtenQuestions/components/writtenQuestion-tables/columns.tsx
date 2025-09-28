@@ -22,7 +22,7 @@ export const columns: ColumnDef<WrittenQuestion>[] = [
       return (
         <div className="flex flex-col gap-1">
           {libelles?.map((l, idx) => (
-           l?.typeLibelle === 'text' ? (
+           l?.typeLibelle === 'texte' ? (
             <div key={idx} className="p-2 border rounded-md">
               <p className="font-medium">{l.libelle}</p>
             </div>

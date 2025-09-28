@@ -17,7 +17,6 @@ export const OralQuestionProvider = ({ children }: { children: React.ReactNode }
 
   const loadOralQuestions = async () => {
     const data = await fetchOralQuestions(axiosInstance, getHeaders);
-    console.log(data.data);
     setOralQuestions(data.data);
   };
 
@@ -26,18 +25,21 @@ export const OralQuestionProvider = ({ children }: { children: React.ReactNode }
   }, []);
 
   const createOralQuestion = async (question: OralQuestion) => {
-    await addOralQuestion(axiosInstance, question, getHeaders);
+   const res = await addOralQuestion(axiosInstance, question, getHeaders);
     loadOralQuestions();
+    return res;
   };
 
   const editOralQuestion = async (id: string, question: OralQuestion) => {
-    await updateOralQuestion(axiosInstance, id, question, getHeaders);
+    const res = await updateOralQuestion(axiosInstance, id, question, getHeaders);
     loadOralQuestions();
+    return res;
   };
 
   const removeOralQuestion = async (id: string) => {
-    await deleteOralQuestion(axiosInstance, id, getHeaders);
+    const res = await deleteOralQuestion(axiosInstance, id, getHeaders);
     loadOralQuestions();
+    return res;
   };
 
   return (

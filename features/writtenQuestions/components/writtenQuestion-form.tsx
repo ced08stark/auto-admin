@@ -821,7 +821,7 @@ export default function WrittenQuestionForm({
 
             <div className="space-y-6">
               {consignesFields.map((field, index) => (
-                <div key={field.id} className="border rounded-lg p-4 bg-gray-50">
+                <div key={field.id} className="border rounded-lg p-4 ">{/*"bg-gray-50"*/}
                   <div className="flex items-center justify-between mb-4">
                     <h4 className="font-medium">Consigne {index + 1}</h4>
                     {consignesFields.length > 1 && (
@@ -846,7 +846,7 @@ export default function WrittenQuestionForm({
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {form.watch(`consignes.${index}.suggestions`)?.map((_s: any, sIndex: number) => (
-                      <div key={sIndex} className="border rounded p-3 bg-white space-y-2">
+                      <div key={sIndex} className="border rounded p-3 space-y-2">{/*"bg-white "*/}
                         <FormInput
                           control={form.control}
                           name={`consignes.${index}.suggestions.${sIndex}.text`}

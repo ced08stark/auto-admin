@@ -77,7 +77,7 @@ export const CellAction: React.FC<CellActionProps> = ({ data }) => {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuLabel>Actions</DropdownMenuLabel>
-          <DropdownMenuItem onClick={() => router.push(`/dashboard/oral-questions/${data._id}`)}>
+          <DropdownMenuItem onClick={() => router.push(`/dashboard/serie/${data._id}`)}>
             <IconEye className="mr-2 h-4 w-4" /> Details
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => setOpenUpdate(true)}>
