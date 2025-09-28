@@ -28,7 +28,7 @@ import { useAuthHeaders } from "@/hooks/useAuthHeader";
 
 // Service d'upload avec Axios
 class FileUploadService {
-  private static readonly BACKEND_URL = "http://localhost:5000";
+  private static readonly BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
   private static readonly MAX_RETRIES = 3;
 
   static async uploadFile(

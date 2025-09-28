@@ -33,14 +33,14 @@ export function WrittenQuestionTable<TData, TValue>({
 
   return (
     <>
-      <div className="flex items-center justify-between mb-4">
+     {series && series.length > 0 && <div className="flex items-center justify-between mb-4">
         {/* Barre de recherche existante (si vous en avez une) */}
 
         {/* ✨ 3. Ajouter le composant de filtre */}
         <SerieFilter series={series ?? []} />
 
         {/* Bouton "Ajouter une question" (si vous en avez un) */}
-      </div>
+      </div>}
       <DataTable table={table}>
         <DataTableToolbar table={table} />
       </DataTable>
